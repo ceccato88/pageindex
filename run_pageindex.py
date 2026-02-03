@@ -10,7 +10,8 @@ if __name__ == "__main__":
     parser.add_argument('--pdf_path', type=str, help='Path to the PDF file')
     parser.add_argument('--md_path', type=str, help='Path to the Markdown file')
 
-    parser.add_argument('--model', type=str, default='gpt-4o-2024-11-20', help='Model to use')
+    default_model = os.getenv("DEFAULT_MODEL", "meta/llama3-70b-instruct")
+    parser.add_argument('--model', type=str, default=default_model, help='Model to use')
 
     parser.add_argument('--toc-check-pages', type=int, default=20, 
                       help='Number of pages to check for table of contents (PDF only)')
@@ -36,6 +37,9 @@ if __name__ == "__main__":
     parser.add_argument('--summary-token-threshold', type=int, default=200,
                       help='Token threshold for generating summaries (markdown only)')
     args = parser.parse_args()
+
+    if "NVIDIA_NIM_API_KEY" not in os.environ:
+        raise ValueError("NVIDIA_NIM_API_KEY not set. Please export it before running this script.")
     
     # Validate that exactly one file type is specified
     if not args.pdf_path and not args.md_path:
