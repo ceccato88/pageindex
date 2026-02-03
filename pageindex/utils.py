@@ -123,6 +123,62 @@ def LiteLLM_API_with_finish_reason(model, prompt, api_key=None, chat_history=Non
     return "Error", "error"
 
 
+async def LiteLLM_API_with_finish_reason_async(model, prompt, api_key=None, chat_history=None):
+    """
+    Chamada assíncrona ao LiteLLM com retorno do motivo de finalização.
+    Inclui backoff exponencial para rate limits.
+    """
+    max_retries = 10
+
+    if not model:
+        model = DEFAULT_MODEL
+
+    if not model.startswith("nvidia_nim/"):
+        model = f"nvidia_nim/{model}"
+
+    for i in range(max_retries):
+        try:
+            if chat_history:
+                messages = chat_history.copy()
+                messages.append({"role": "user", "content": prompt})
+            else:
+                messages = [{"role": "user", "content": prompt}]
+
+            async with _GLOBAL_ASYNC_SEMAPHORE:
+                response = await litellm.acompletion(
+                    model=model,
+                    messages=messages,
+                    temperature=0,
+                    api_key=api_key or NVIDIA_NIM_API_KEY,
+                )
+
+            finish_reason = response.choices[0].finish_reason
+            content = response.choices[0].message.content
+
+            if finish_reason == "length":
+                return content, "max_output_reached"
+            return content, "finished"
+
+        except RateLimitError as e:
+            wait_time = min(2 ** i * 2, 60)
+            logger.warning(f"Rate limit atingido (tentativa {i+1}/{max_retries}). Aguardando {wait_time}s...")
+            await _jitter_async_sleep(wait_time)
+
+        except (APIError, APIConnectionError) as e:
+            wait_time = min(2 ** i, 30)
+            logger.warning(f"Erro de API (tentativa {i+1}/{max_retries}): {e}. Aguardando {wait_time}s...")
+            await _jitter_async_sleep(wait_time)
+
+        except Exception as e:
+            logger.error(f"Erro inesperado: {e}")
+            if i < max_retries - 1:
+                await _jitter_async_sleep(2 ** i)
+            else:
+                logger.error(f'Max retries atingido. Prompt: {prompt[:100]}...')
+                return "Error", "error"
+
+    return "Error", "error"
+
 def LiteLLM_API(model, prompt, api_key=None, chat_history=None):
     """
     Chamada síncrona ao LiteLLM.
@@ -227,6 +283,7 @@ async def LiteLLM_API_async(model, prompt, api_key=None):
 
 __all__ = [
     "LiteLLM_API_with_finish_reason",
+    "LiteLLM_API_with_finish_reason_async",
     "LiteLLM_API",
     "LiteLLM_API_async",
 ]
