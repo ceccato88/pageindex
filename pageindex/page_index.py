@@ -6,7 +6,6 @@ import random
 import re
 import asyncio
 from .utils import *
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 ################### check title in page #########################################################
@@ -1055,9 +1054,9 @@ async def tree_parser(page_list, opt, doc=None, logger=None):
     return toc_tree
 
 
-def page_index_main(doc, opt=None):
+async def page_index_main_async(doc, opt=None):
     logger = JsonLogger(doc)
-    
+
     is_valid_pdf = (
         (isinstance(doc, str) and os.path.isfile(doc) and doc.lower().endswith(".pdf")) or 
         isinstance(doc, BytesIO)
@@ -1097,7 +1096,34 @@ def page_index_main(doc, opt=None):
             'structure': structure,
         }
 
-    return asyncio.run(page_index_builder())
+    return await page_index_builder()
+
+
+def page_index_main(doc, opt=None):
+    logger = JsonLogger(doc)
+    
+    is_valid_pdf = (
+        (isinstance(doc, str) and os.path.isfile(doc) and doc.lower().endswith(".pdf")) or 
+        isinstance(doc, BytesIO)
+    )
+    if not is_valid_pdf:
+        raise ValueError("Unsupported input type. Expected a PDF file path or BytesIO object.")
+
+    print('Parsing PDF...')
+    page_list = get_page_tokens(doc)
+
+    logger.info({'total_page_number': len(page_list)})
+    logger.info({'total_token': sum([page[1] for page in page_list])})
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(page_index_main_async(doc, opt))
+    else:
+        raise RuntimeError(
+            "Detected a running event loop. Use `await page_index_main_async(...)` "
+            "or `await page_index_async(...)` instead of `page_index_main(...)`."
+        )
 
 
 def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,
@@ -1109,6 +1135,16 @@ def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=
     }
     opt = ConfigLoader().load(user_opt)
     return page_index_main(doc, opt)
+
+
+async def page_index_async(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,
+                           if_add_node_id=None, if_add_node_summary=None, if_add_doc_description=None, if_add_node_text=None):
+    user_opt = {
+        arg: value for arg, value in locals().items()
+        if arg != "doc" and value is not None
+    }
+    opt = ConfigLoader().load(user_opt)
+    return await page_index_main_async(doc, opt)
 
 
 def validate_and_truncate_physical_indices(toc_with_page_number, page_list_length, start_index=1, logger=None):
