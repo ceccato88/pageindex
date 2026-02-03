@@ -13,3 +13,10 @@ log/*
 logs/
 parts/*
 json_results/*
+.cache/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Ignore notebooks with hardcoded secrets
+cookbook/
