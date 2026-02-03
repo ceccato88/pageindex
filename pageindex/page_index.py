@@ -6,6 +6,7 @@ import random
 import re
 import asyncio
 from .utils import *
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 ################### check title in page #########################################################
@@ -1100,30 +1101,22 @@ async def page_index_main_async(doc, opt=None):
 
 
 def page_index_main(doc, opt=None):
-    logger = JsonLogger(doc)
-    
-    is_valid_pdf = (
-        (isinstance(doc, str) and os.path.isfile(doc) and doc.lower().endswith(".pdf")) or 
-        isinstance(doc, BytesIO)
-    )
-    if not is_valid_pdf:
-        raise ValueError("Unsupported input type. Expected a PDF file path or BytesIO object.")
-
-    print('Parsing PDF...')
-    page_list = get_page_tokens(doc)
-
-    logger.info({'total_page_number': len(page_list)})
-    logger.info({'total_token': sum([page[1] for page in page_list])})
-
+    """
+    Main entry point that handles both script (new loop) and notebook (existing loop) environments.
+    """
     try:
-        asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
+        # No running loop (e.g., standard python script)
         return asyncio.run(page_index_main_async(doc, opt))
     else:
-        raise RuntimeError(
-            "Detected a running event loop. Use `await page_index_main_async(...)` "
-            "or `await page_index_async(...)` instead of `page_index_main(...)`."
-        )
+        # Running loop detected (e.g., Jupyter/Colab)
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(page_index_main_async(doc, opt))
+        else:
+            return loop.run_until_complete(page_index_main_async(doc, opt))
 
 
 def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,
