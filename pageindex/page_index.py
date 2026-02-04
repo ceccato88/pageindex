@@ -763,6 +763,38 @@ async def check_toc(page_list, opt=None):
 # 4. FIX & VERIFY
 # ==============================================================================
 
+def _normalize_title(text):
+    # Normalize for deterministic matching: lowercase, collapse spaces, remove punctuation
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^\w\s\-]+", "", text)
+    return text.strip()
+
+
+def _find_title_in_pages(section_title, page_list, start_index=1, min_page=None, max_page=None):
+    """Deterministic match of title in page text. Returns physical_index or None."""
+    title_norm = _normalize_title(section_title)
+    if not title_norm:
+        return None
+
+    min_page = min_page if min_page is not None else start_index
+    max_page = max_page if max_page is not None else (start_index + len(page_list) - 1)
+    min_page = max(min_page, start_index)
+    max_page = min(max_page, start_index + len(page_list) - 1)
+
+    for page_index in range(min_page, max_page + 1):
+        list_idx = page_index - start_index
+        if list_idx < 0 or list_idx >= len(page_list):
+            continue
+        page_text = page_list[list_idx][0]
+        page_norm = _normalize_title(page_text)
+        if title_norm and title_norm in page_norm:
+            return page_index
+    return None
+
+
 async def single_toc_item_index_fixer(section_title, content, model="gpt-4o-2024-11-20"):
     tob_extractor_prompt = """
     You are given a section title and several pages of a document, your job is to find the physical index of the start page of the section in the partial document.
@@ -787,7 +819,7 @@ async def single_toc_item_index_fixer(section_title, content, model="gpt-4o-2024
         "parsed": json_content,
     }
 
-async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, start_index=1, model=None, logger=None, fix_model=None):
+async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, start_index=1, model=None, logger=None, fix_model=None, fix_search_window=None):
     print(f'start fix_incorrect_toc with {len(incorrect_results)} incorrect results')
     incorrect_indices = {result['list_index'] for result in incorrect_results}
     
@@ -824,9 +856,9 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
         if next_correct is None:
             next_correct = end_index
         
-        # Constraint: limit fix search range to avoid huge contexts
-        if next_correct - prev_correct > 20: 
-             next_correct = prev_correct + 20
+        # Optional constraint to avoid huge contexts (configurable)
+        if fix_search_window is not None and next_correct - prev_correct > fix_search_window:
+            next_correct = prev_correct + fix_search_window
 
         incorrect_results_and_range_logs.append({
             'list_index': list_index,
@@ -847,6 +879,25 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
         
         if not content_range.strip():
              return {'list_index': list_index, 'is_valid': False, 'physical_index': None, 'title': incorrect_item['title']}
+
+        # Deterministic match before LLM
+        deterministic_idx = _find_title_in_pages(
+            incorrect_item['title'],
+            page_list,
+            start_index=start_index,
+            min_page=prev_correct,
+            max_page=next_correct,
+        )
+        if deterministic_idx is not None:
+            physical_index_int = deterministic_idx
+            debug = {
+                "deterministic_match": True,
+                "range": [prev_correct, next_correct],
+                "title": incorrect_item['title'],
+            }
+        else:
+            model_to_use = fix_model or model
+            physical_index_int, debug = await single_toc_item_index_fixer(incorrect_item['title'], content_range, model_to_use)
 
         model_to_use = fix_model or model
         physical_index_int, debug = await single_toc_item_index_fixer(incorrect_item['title'], content_range, model_to_use)
@@ -900,7 +951,7 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
 
     return toc_with_page_number, invalid_results
 
-async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorrect_results, start_index=1, max_attempts=5, model=None, logger=None, fail_on_incorrect=True, fix_model=None):
+async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorrect_results, start_index=1, max_attempts=5, model=None, logger=None, fail_on_incorrect=True, fix_model=None, fix_search_window=None):
     print('start fix_incorrect_toc_with_retries')
     fix_attempt = 0
     current_toc = toc_with_page_number
@@ -917,6 +968,7 @@ async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorr
             model,
             logger,
             fix_model=fix_model,
+            fix_search_window=fix_search_window,
         )
                 
         fix_attempt += 1
@@ -1036,6 +1088,7 @@ async def meta_processor(page_list, mode=None, toc_content=None, toc_page_list=N
             logger=logger,
             fail_on_incorrect=getattr(opt, "fix_fail_on_incorrect", True),
             fix_model=getattr(opt, "fix_model", None) or opt.model,
+            fix_search_window=getattr(opt, "fix_search_window", None),
         )
         return toc_with_page_number
     else:

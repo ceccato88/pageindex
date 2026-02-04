@@ -35,6 +35,8 @@ if __name__ == "__main__":
                       help='Max attempts to fix incorrect TOC items')
     parser.add_argument('--fix-fail-on-incorrect', type=str, default='yes',
                       help='Fail if incorrect TOC items remain after retries (yes/no)')
+    parser.add_argument('--fix-search-window', type=int, default=None,
+                      help='Max page range window for fixing TOC items (None = no limit)')
                       
     # Markdown specific arguments
     parser.add_argument('--if-thinning', type=str, default='no',
@@ -75,6 +77,7 @@ if __name__ == "__main__":
             fix_model=args.fix_model,
             fix_max_attempts=args.fix_max_attempts,
             fix_fail_on_incorrect=args.fix_fail_on_incorrect.lower() == 'yes',
+            fix_search_window=args.fix_search_window,
         )
 
         # Process the PDF
@@ -119,6 +122,7 @@ if __name__ == "__main__":
             'fix_model': args.fix_model,
             'fix_max_attempts': args.fix_max_attempts,
             'fix_fail_on_incorrect': args.fix_fail_on_incorrect.lower() == 'yes',
+            'fix_search_window': args.fix_search_window,
         }
         
         # Load config with defaults from config.yaml
