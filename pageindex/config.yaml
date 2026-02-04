@@ -6,3 +6,6 @@ if_add_node_id: "yes"
 if_add_node_summary: "yes"
 if_add_doc_description: "no"
 if_add_node_text: "no"
+fix_model: null
+fix_max_attempts: 5
+fix_fail_on_incorrect: true

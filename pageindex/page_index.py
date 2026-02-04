@@ -778,10 +778,16 @@ async def single_toc_item_index_fixer(section_title, content, model="gpt-4o-2024
 
     prompt = tob_extractor_prompt + '\nSection Title:\n' + str(section_title) + '\nDocument pages:\n' + content
     response = await LiteLLM_API_async(model=model, prompt=prompt)
-    json_content = extract_json(response)    
-    return convert_physical_index_to_int(json_content.get('physical_index'))
+    json_content = extract_json(response)
+    if not json_content or 'physical_index' not in json_content:
+        raise ValueError(f"Failed to parse physical_index. Response: {response[:500]}")
+    return convert_physical_index_to_int(json_content.get('physical_index')), {
+        "prompt": prompt,
+        "response": response,
+        "parsed": json_content,
+    }
 
-async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, start_index=1, model=None, logger=None):
+async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, start_index=1, model=None, logger=None, fix_model=None):
     print(f'start fix_incorrect_toc with {len(incorrect_results)} incorrect results')
     incorrect_indices = {result['list_index'] for result in incorrect_results}
     
@@ -842,17 +848,19 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
         if not content_range.strip():
              return {'list_index': list_index, 'is_valid': False, 'physical_index': None, 'title': incorrect_item['title']}
 
-        physical_index_int = await single_toc_item_index_fixer(incorrect_item['title'], content_range, model)
+        model_to_use = fix_model or model
+        physical_index_int, debug = await single_toc_item_index_fixer(incorrect_item['title'], content_range, model_to_use)
         
         check_item = incorrect_item.copy()
         check_item['physical_index'] = physical_index_int
-        check_result = await check_title_appearance(check_item, page_list, start_index, model)
+        check_result = await check_title_appearance(check_item, page_list, start_index, model_to_use)
 
         return {
             'list_index': list_index,
             'title': incorrect_item['title'],
             'physical_index': physical_index_int,
-            'is_valid': check_result['answer'] == 'yes'
+            'is_valid': check_result['answer'] == 'yes',
+            'debug': debug,
         }
 
     tasks = [process_and_check_item(item) for item in incorrect_results]
@@ -862,6 +870,12 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
     for item, result in zip(incorrect_results, results):
         if isinstance(result, Exception):
             print(f"Fixing item {item.get('title')} generated an exception: {result}")
+            if logger:
+                logger.error({
+                    "event": "fix_incorrect_toc_exception",
+                    "item": item,
+                    "error": str(result),
+                })
             continue
         valid_results.append(result)
 
@@ -875,13 +889,18 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
                 invalid_results.append(result)
         else:
             invalid_results.append(result)
+            if logger:
+                logger.info({
+                    "event": "fix_incorrect_toc_invalid",
+                    "result": result,
+                })
 
     logger.info(f'incorrect_results_and_range_logs: {incorrect_results_and_range_logs}')
     logger.info(f'invalid_results: {invalid_results}')
 
     return toc_with_page_number, invalid_results
 
-async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorrect_results, start_index=1, max_attempts=3, model=None, logger=None):
+async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorrect_results, start_index=1, max_attempts=5, model=None, logger=None, fail_on_incorrect=True, fix_model=None):
     print('start fix_incorrect_toc_with_retries')
     fix_attempt = 0
     current_toc = toc_with_page_number
@@ -890,12 +909,34 @@ async def fix_incorrect_toc_with_retries(toc_with_page_number, page_list, incorr
     while current_incorrect:
         print(f"Fixing {len(current_incorrect)} incorrect results. Attempt {fix_attempt + 1}/{max_attempts}")
         
-        current_toc, current_incorrect = await fix_incorrect_toc(current_toc, page_list, current_incorrect, start_index, model, logger)
+        current_toc, current_incorrect = await fix_incorrect_toc(
+            current_toc,
+            page_list,
+            current_incorrect,
+            start_index,
+            model,
+            logger,
+            fix_model=fix_model,
+        )
                 
         fix_attempt += 1
         if fix_attempt >= max_attempts:
+            if fail_on_incorrect:
+                msg = "Maximum fix attempts reached with remaining incorrect items; aborting."
+                print(f"❌ {msg}")
+                if logger:
+                    logger.error({
+                        "event": "fix_incorrect_toc_failed",
+                        "message": msg,
+                        "remaining": current_incorrect,
+                    })
+                raise RuntimeError(msg)
             print("⚠️ Warning: Maximum fix attempts reached. Proceeding with remaining incorrect items.")
-            logger.info("Maximum fix attempts reached")
+            if logger:
+                logger.info({
+                    "event": "fix_incorrect_toc_max_attempts",
+                    "remaining": current_incorrect,
+                })
             break
     
     return current_toc, current_incorrect
@@ -986,8 +1027,15 @@ async def meta_processor(page_list, mode=None, toc_content=None, toc_page_list=N
     if accuracy > 0.6 and len(incorrect_results) > 0:
         # Use retry logic here to prevent infinite loops
         toc_with_page_number, incorrect_results = await fix_incorrect_toc_with_retries(
-            toc_with_page_number, page_list, incorrect_results,
-            start_index=start_index, max_attempts=3, model=opt.model, logger=logger
+            toc_with_page_number,
+            page_list,
+            incorrect_results,
+            start_index=start_index,
+            max_attempts=getattr(opt, "fix_max_attempts", 5),
+            model=opt.model,
+            logger=logger,
+            fail_on_incorrect=getattr(opt, "fix_fail_on_incorrect", True),
+            fix_model=getattr(opt, "fix_model", None) or opt.model,
         )
         return toc_with_page_number
     else:
@@ -1142,7 +1190,8 @@ def page_index_main(doc, opt=None):
 
 
 def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,
-               if_add_node_id=None, if_add_node_summary=None, if_add_doc_description=None, if_add_node_text=None):
+               if_add_node_id=None, if_add_node_summary=None, if_add_doc_description=None, if_add_node_text=None,
+               fix_model=None, fix_max_attempts=None, fix_fail_on_incorrect=None):
     
     user_opt = {
         arg: value for arg, value in locals().items()
@@ -1153,7 +1202,8 @@ def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=
 
 
 async def page_index_async(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,
-                           if_add_node_id=None, if_add_node_summary=None, if_add_doc_description=None, if_add_node_text=None):
+                           if_add_node_id=None, if_add_node_summary=None, if_add_doc_description=None, if_add_node_text=None,
+                           fix_model=None, fix_max_attempts=None, fix_fail_on_incorrect=None):
     user_opt = {
         arg: value for arg, value in locals().items()
         if arg != "doc" and value is not None

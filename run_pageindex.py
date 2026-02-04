@@ -28,6 +28,13 @@ if __name__ == "__main__":
                       help='Whether to add doc description to the doc')
     parser.add_argument('--if-add-node-text', type=str, default='no',
                       help='Whether to add text to the node')
+
+    parser.add_argument('--fix-model', type=str, default=None,
+                      help='Model to use for fixing incorrect TOC items')
+    parser.add_argument('--fix-max-attempts', type=int, default=None,
+                      help='Max attempts to fix incorrect TOC items')
+    parser.add_argument('--fix-fail-on-incorrect', type=str, default='yes',
+                      help='Fail if incorrect TOC items remain after retries (yes/no)')
                       
     # Markdown specific arguments
     parser.add_argument('--if-thinning', type=str, default='no',
@@ -64,7 +71,10 @@ if __name__ == "__main__":
             if_add_node_id=args.if_add_node_id,
             if_add_node_summary=args.if_add_node_summary,
             if_add_doc_description=args.if_add_doc_description,
-            if_add_node_text=args.if_add_node_text
+            if_add_node_text=args.if_add_node_text,
+            fix_model=args.fix_model,
+            fix_max_attempts=args.fix_max_attempts,
+            fix_fail_on_incorrect=args.fix_fail_on_incorrect.lower() == 'yes',
         )
 
         # Process the PDF
@@ -105,7 +115,10 @@ if __name__ == "__main__":
             'if_add_node_summary': args.if_add_node_summary,
             'if_add_doc_description': args.if_add_doc_description,
             'if_add_node_text': args.if_add_node_text,
-            'if_add_node_id': args.if_add_node_id
+            'if_add_node_id': args.if_add_node_id,
+            'fix_model': args.fix_model,
+            'fix_max_attempts': args.fix_max_attempts,
+            'fix_fail_on_incorrect': args.fix_fail_on_incorrect.lower() == 'yes',
         }
         
         # Load config with defaults from config.yaml
